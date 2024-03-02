@@ -6,12 +6,20 @@ import datetime
 from aiogram import Bot, Dispatcher, types, executor
 from moviepy.editor import VideoFileClip
 from io import BytesIO, FileIO
+from aiogram.dispatcher import FSMContext
+from aiogram.dispatcher.filters.state import State, StatesGroup
 
 import aiogram.utils.exceptions
+
+class SendBroadcastState(StatesGroup):
+    waiting_for_message = State()
 
 API_TOKEN = ""  # @BotFather token bot
 CHANNEL_ID = -1002120834518 # channel id
 CHANNEL_LINK = "https://t.me/+_IQt3BVSW_o5Yjhk"  # линк на канал
+
+# Ваш ID в переменной для проверки админских прав
+ADMIN_USER_ID = 123456789  # Замените на ваш реальный ID
 
 conn = sqlite3.connect('users.db')
 cursor = conn.cursor()
@@ -135,6 +143,83 @@ async def hide_message(callback_query: types.CallbackQuery):
 
 dp.register_message_handler(start, commands=["start"])
 dp.register_message_handler(process_video, content_types=types.ContentType.VIDEO)
+
+async def admin_command(message: types.Message):
+    user = message.from_user
+
+    if user.id == ADMIN_USER_ID:
+        # Пользователь является администратором
+        total_users = cursor.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        await message.answer(f"В базе данных всего юзеров: {total_users}")
+
+        # Создаем инлайн-кнопку для рассылки
+        keyboard = types.InlineKeyboardMarkup()
+        send_broadcast_button = types.InlineKeyboardButton(text="Рассылка", callback_data="send_broadcast")
+        keyboard.add(send_broadcast_button)
+
+        await message.answer("Выберите действие:", reply_markup=keyboard)
+    else:
+        # Пользователь не имеет прав на выполнение команды
+        await message.answer("У вас нет прав на выполнение этой команды.")
+
+async def send_broadcast_request(callback_query: types.CallbackQuery):
+    await callback_query.answer()
+
+    # Запрос на ввод сообщения для рассылки
+    await callback_query.message.answer("Пожалуйста, напишите сообщение для рассылки:")
+    await SendBroadcastState.waiting_for_message.set()
+
+@dp.message_handler(state=SendBroadcastState.waiting_for_message)
+async def process_broadcast_message(message: types.Message, state: FSMContext):
+    await state.finish()
+
+    user = message.from_user
+
+    # Ваш ID в переменной для проверки админских прав
+    if user.id != ADMIN_USER_ID:
+        await message.answer("У вас нет прав на выполнение этой команды.")
+        return
+
+    # Запрашиваем подтверждение перед рассылкой
+    keyboard = types.InlineKeyboardMarkup()
+    confirm_button = types.InlineKeyboardButton(text="Да", callback_data="confirm_broadcast")
+    cancel_button = types.InlineKeyboardButton(text="Нет", callback_data="cancel_broadcast")
+    keyboard.add(confirm_button, cancel_button)
+
+    await message.answer("Вы уверены?", reply_markup=keyboard)
+    await state.update_data(broadcast_message=message.text)
+
+@dp.callback_query_handler(lambda callback_query: callback_query.data == "confirm_broadcast", state="*")
+async def confirm_broadcast(callback_query: types.CallbackQuery, state: FSMContext):
+    await callback_query.answer()
+
+    # Получаем данные из состояния
+    data = await state.get_data()
+    broadcast_message = data.get("broadcast_message")
+
+    # Рассылаем сообщение всем пользователям
+    users = cursor.execute("SELECT user_id FROM users").fetchall()
+    for user_id in users:
+        try:
+            await bot.send_message(user_id[0], broadcast_message)
+        except aiogram.utils.exceptions.BotBlocked:
+            pass  # Игнорируем заблокированных пользователей
+
+    await callback_query.message.answer("Рассылка завершена.")
+    await state.finish()
+
+@dp.callback_query_handler(lambda callback_query: callback_query.data == "cancel_broadcast", state="*")
+async def cancel_broadcast(callback_query: types.CallbackQuery, state: FSMContext):
+    await callback_query.answer()
+    await callback_query.message.answer("Рассылка отменена.")
+    await state.finish()
+
+# Регистрируем новую команду для админа
+dp.register_message_handler(admin_command, commands=["admin"])
+
+# Регистрируем обработчик для запроса рассылки
+dp.callback_query_handler(lambda callback_query: callback_query.data == "send_broadcast", state="*")(send_broadcast_request)
+
 
 if __name__ == "__main__":
     executor.start_polling(dp, skip_updates=True)

@@ -13,6 +13,10 @@ API_TOKEN = ""  # @BotFather token bot
 CHANNEL_ID = -1002120834518 # channel id
 CHANNEL_LINK = "https://t.me/+_IQt3BVSW_o5Yjhk"  # линк на канал
 
+# -------------------
+ADMIN_ID = 123456789  # Замените на реальный ID администратора
+# -------------------
+
 conn = sqlite3.connect('users.db')
 cursor = conn.cursor()
 cursor.execute('''
@@ -49,6 +53,29 @@ async def start(message: types.Message):
         keyboard.add(check_subscription_button)
 
         await message.answer("Для использования бота, подпишитесь на наш канал https://t.me/+_IQt3BVSW_o5Yjhk, и нажмите кнопку 'Проверить подписку'.", reply_markup=keyboard, parse_mode='HTML')
+
+
+# Функция для подсчета количества людей в базе данных
+async def count_users():
+    cursor.execute("SELECT COUNT(user_id) FROM users")
+    result = cursor.fetchone()
+    if result:
+        return result[0]
+    return 0
+
+# Функция admin_command
+async def admin_command(message: types.Message):
+    user = message.from_user
+    if user.id == ADMIN_ID:
+        total_users = await count_users()
+
+        keyboard = types.InlineKeyboardMarkup()
+        broadcast_button = types.InlineKeyboardButton(text="Рассылка", callback_data="broadcast")
+        keyboard.add(broadcast_button)
+
+        await message.answer(f"Всего людей в базе данных: {total_users}", reply_markup=keyboard)
+    else:
+        await message.answer("Вы не являетесь администратором и не имеете доступа к этой команде.")
 
 
 async def process_video(message: types.Message):
@@ -132,9 +159,44 @@ async def hide_message(callback_query: types.CallbackQuery):
     except aiogram.utils.exceptions.MessageToDeleteNotFound:
         pass
 
+@dp.callback_query_handler(lambda callback_query: callback_query.data == "broadcast")
+async def start_broadcast(callback_query: types.CallbackQuery):
+    await callback_query.answer("Пожалуйста, дорогой админ, напиши любое сообщение для рассылки. :)")
+
+    # Ожидаем сообщение от администратора
+    message = await bot.await_message(callback_query.from_user.id)
+
+    # Проверяем, есть ли текст в сообщении
+    if message.text:
+        await callback_query.answer("Сообщение успешно взято для рассылки.")
+        
+        # Получаем список всех пользователей из базы данных
+        cursor.execute("SELECT user_id FROM users")
+        users = cursor.fetchall()
+
+        # Отправляем сообщение каждому пользователю
+        for user_id in users:
+            try:
+                # Проверяем, есть ли медиафайлы в сообщении
+                if message.photo:
+                    # Если есть фото, отправляем его
+                    await bot.send_photo(user_id[0], photo=message.photo[-1].file_id, caption=message.text)
+                elif message.video:
+                    # Если есть видео, отправляем его
+                    await bot.send_video(user_id[0], video=message.video.file_id, caption=message.text)
+                else:
+                    # Если нет медиафайлов, отправляем текстовое сообщение
+                    await bot.send_message(user_id[0], message.text)
+            except Exception as e:
+                print(f"Ошибка при отправке сообщения пользователю {user_id[0]}: {e}")
+
+    else:
+        await callback_query.answer("Вы не отправили текстовое сообщение. Пожалуйста, повторите попытку.")
 
 dp.register_message_handler(start, commands=["start"])
 dp.register_message_handler(process_video, content_types=types.ContentType.VIDEO)
+# Добавляем команду /admin
+dp.register_message_handler(admin_command, commands=["admin"])
 
 if __name__ == "__main__":
     executor.start_polling(dp, skip_updates=True)
